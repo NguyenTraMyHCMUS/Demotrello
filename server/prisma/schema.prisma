@@ -1,0 +1,401 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DIRECT_URL")
+}
+
+
+// ==============================
+// ENUMS
+// ==============================
+enum AuthProvider {
+  GOOGLE
+  MICROSOFT
+}
+
+enum TokenType {
+  VERIFY_EMAIL
+  RESET_PASSWORD
+}
+
+enum Role {
+  ADMIN
+  MEMBER
+}
+
+enum MemberStatus {
+  ACTIVE
+  PENDING
+  REJECTED
+}
+
+enum ReminderType {
+  NONE
+  AT_TIME_OF_DUE_DATE
+  FIVE_MINUTES_BEFORE
+  TEN_MINUTES_BEFORE
+  ONE_HOUR_BEFORE
+  TWO_HOURS_BEFORE
+  ONE_DAY_BEFORE
+  TWO_DAYS_BEFORE
+}
+
+enum EntityType {
+  WORKSPACE
+  BOARD
+  LIST
+  CARD
+  COMMENT
+}
+
+enum AttachmentType {
+  FILE
+  LINK
+}
+
+// ==============================
+// MODELS - USER & AUTH
+// ==============================
+
+model User {
+  id              String    @id @default(uuid())
+  email           String    @unique
+  password        String?   // Optional vì có thể login bằng Provider
+  fullName        String?
+  avatarUrl       String?
+  isEmailVerified Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  tokens          UserToken[]
+  providers       UserProvider[]
+  
+  // Membership Relations
+  workspaceMembers WorkspaceMember[]
+  boardMembers     BoardMember[]
+  cardMembers      CardMember[]
+
+  // Activity & Social
+  comments         Comment[]
+  commentMentions  CommentMention[] // User được mention
+  notifications    Notification[]   @relation("UserNotifications") // nhận thông báo
+  triggeredNotifications Notification[]   @relation("UserTriggeredNotifications") // Gây ra thông báo (Actor)
+  activityLogs     ActivityLog[]    @relation("UserActivity")
+
+  // Invitation
+  sentInvitations  Invitation[]     @relation("UserSentInvitations") // Lời mời đã gửi
+
+}
+
+model UserProvider {
+  id             String       @id @default(uuid())
+  userId         String
+  providerUserId String
+  authProvider   AuthProvider
+
+  @@unique([authProvider, providerUserId])
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserToken {
+  id        String    @id @default(uuid())
+  userId    String
+  token     String    @unique
+  type      TokenType
+  expiresAt DateTime
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// ==============================
+// MODELS - WORKSPACE & BOARD
+// ==============================
+
+model Workspace {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members WorkspaceMember[]
+  boards  Board[]
+}
+
+model WorkspaceMember {
+  id          String       @id @default(uuid())
+  workspaceId String
+  userId      String
+  role        Role         @default(MEMBER)
+  joinedAt    DateTime     @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([workspaceId])
+  @@index([userId])
+}
+
+model Board {
+  id           String   @id @default(uuid())
+  workspaceId  String
+  title        String
+  background   String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  workspace    Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  
+  members      BoardMember[]
+  lists        List[]
+  labels       Label[]
+  activityLogs ActivityLog[]
+
+  @@index([workspaceId])
+  @@index([workspaceId, createdAt])
+}
+
+model BoardMember {
+  id       String       @id @default(uuid())
+  boardId  String
+  userId   String
+  role     Role         @default(MEMBER)
+  status   MemberStatus @default(PENDING)
+  joinedAt DateTime     @default(now())
+
+  board Board @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([boardId, userId])
+
+  @@index([userId])
+  @@index([boardId, status])
+}
+
+// ==============================
+// MODELS - LIST & CARD
+// ==============================
+
+model List {
+  id        String   @id @default(uuid())
+  boardId   String
+  title     String
+  position  String    // Dùng thuật toán Lexorank để sắp xếp
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  board Board  @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  cards Card[]
+
+  @@index([boardId])
+  @@index([boardId, position])
+}
+
+model Card {
+  id           String       @id @default(uuid())
+  listId       String
+  title        String
+  description  String?
+  position     String
+  isCompleted  Boolean      @default(false)
+  dueDate      DateTime?
+  reminder     ReminderType @default(NONE)
+  completedAt  DateTime?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  list List @relation(fields: [listId], references: [id], onDelete: Cascade)
+
+  members     CardMember[]
+  labels      CardLabel[]
+  comments    Comment[]
+  attachments Attachment[]
+  checklists  Checklist[]
+
+  @@index([listId])
+  @@index([listId, position])
+  @@index([dueDate])
+  @@index([dueDate, isCompleted])
+}
+
+model CardMember {
+  id     String @id @default(uuid())
+  cardId String
+  userId String
+
+  card Card @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([cardId, userId])
+  @@index([userId])
+}
+
+model Label {
+  id      String @id @default(uuid())
+  boardId String
+  title   String
+  color   String
+
+  board      Board       @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  cardLabels CardLabel[]
+}
+
+model CardLabel {
+  id      String @id @default(uuid())
+  cardId  String
+  labelId String
+
+  card  Card  @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  label Label @relation(fields: [labelId], references: [id], onDelete: Cascade)
+
+  @@unique([cardId, labelId])
+}
+
+// ==============================
+// MODELS - CARD FEATURES (Comment, Attachment, Checklist)
+// ==============================
+
+model Comment {
+  id        String   @id @default(uuid())
+  cardId    String
+  userId    String
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  card     Card             @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  user     User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mentions CommentMention[]
+
+  @@index([cardId, createdAt])
+}
+
+model CommentMention {
+  id              String @id @default(uuid())
+  commentId       String
+  mentionedUserId String
+
+  comment       Comment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  mentionedUser User    @relation(fields: [mentionedUserId], references: [id], onDelete: Cascade)
+
+  @@index([mentionedUserId])
+}
+
+model Attachment {
+  id           String   @id @default(uuid())
+  cardId       String
+  
+  // Discriminator fields
+  type         AttachmentType @default(FILE) 
+  
+  // FileAttachment fields
+  fileUrl      String?
+  fileName     String?
+  fileSize     Int?    
+  
+  // LinkAttachment fields
+  linkUrl      String?
+
+  createdAt    DateTime @default(now())
+
+  card Card @relation(fields: [cardId], references: [id], onDelete: Cascade)
+
+  @@index([cardId])
+}
+
+model Checklist {
+  id        String   @id @default(uuid())
+  cardId    String
+  title     String
+  createdAt DateTime @default(now())
+
+  card  Card            @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  items ChecklistItem[]
+
+  @@index([cardId])
+}
+
+model ChecklistItem {
+  id          String  @id @default(uuid())
+  checklistId String
+  title       String
+  isCompleted Boolean @default(false)
+
+  checklist Checklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+
+  @@index([checklistId])
+}
+
+// ==============================
+// MODELS - SYSTEM (Log, Notification, Invitation)
+// ==============================
+
+model ActivityLog {
+  id          String     @id @default(uuid())
+  boardId     String
+  cardId      String?
+  actorId     String
+  action      String
+  entityId    String
+  entityType  EntityType
+  description String?
+  createdAt   DateTime   @default(now())
+
+  board Board @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  actor User  @relation("UserActivity", fields: [actorId], references: [id], onDelete: Cascade)
+
+  @@index([boardId, createdAt])
+  @@index([actorId])
+}
+
+model Notification {
+  id          String           @id @default(uuid())
+  recipientId String
+  actorId     String
+  type        String
+  entityId    String
+  entityType  EntityType
+  message     String?
+  isRead      Boolean          @default(false)
+  createdAt   DateTime         @default(now())
+
+  recipient User @relation("UserNotifications", fields: [recipientId], references: [id], onDelete: Cascade)
+  actor User @relation("UserTriggeredNotifications", fields: [actorId], references: [id], onDelete: Cascade)
+
+  @@index([recipientId, isRead])
+  @@index([recipientId, createdAt])
+}
+
+model Invitation {
+  id           String     @id @default(uuid())
+  inviterId    String
+  inviteeEmail String?
+  token        String     @unique
+  entityId     String
+  entityType   EntityType
+  expiresAt    DateTime
+  isRevoked    Boolean    @default(false)
+  createdAt    DateTime   @default(now())
+
+  inviter User @relation("UserSentInvitations", fields: [inviterId], references: [id], onDelete: Cascade)
+
+  @@index([inviterId])
+  @@index([expiresAt])
+}
